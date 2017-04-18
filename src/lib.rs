@@ -71,18 +71,22 @@
 //!
 //! ```no_run
 //! extern crate futures;
-//! extern crate tokio_core;
 //! extern crate tokio_proto;
 //! extern crate tokio_service;
+//! extern crate tokio_io;
+//! extern crate bytes;
 //!
 //! use std::str;
 //! use std::io::{self, ErrorKind, Write};
 //!
 //! use futures::{future, Future, BoxFuture};
-//! use tokio_core::io::{Io, Codec, Framed, EasyBuf};
 //! use tokio_proto::TcpServer;
 //! use tokio_proto::pipeline::ServerProto;
 //! use tokio_service::Service;
+//! use tokio_io::codec::{Encoder, Decoder};
+//! use tokio_io::codec::Framed;
+//! use tokio_io::{AsyncRead, AsyncWrite};
+//! use bytes::{BytesMut, BufMut};
 //!
 //! // First, we implement a *codec*, which provides a way of encoding and
 //! // decoding messages for the protocol. See the documentation for `Codec` in
@@ -98,21 +102,22 @@
 //!        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?)
 //! }
 //!
-//! impl Codec for IntCodec {
-//!     type In = u64;
-//!     type Out = u64;
+//! impl Decoder for IntCodec {
+//!     type Item = u64;
+//!     type Error = io::Error;
 //!
 //!     // Attempt to decode a message from the given buffer if a complete
 //!     // message is available; returns `Ok(None)` if the buffer does not yet
 //!     // hold a complete message.
-//!     fn decode(&mut self, buf: &mut EasyBuf) -> Result<Option<u64>, io::Error> {
-//!         if let Some(i) = buf.as_slice().iter().position(|&b| b == b'\n') {
+//!     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<u64>, io::Error> {
+//!         if let Some(mut i) = buf.iter().position(|&b| b == b'\n') {
 //!             // remove the line, including the '\n', from the buffer
-//!             let full_line = buf.drain_to(i + 1);
-//!
-//!             // strip the'`\n'
-//!             let slice = &full_line.as_slice()[..i];
-//!
+//!             let full_line = buf.split_to(i + 1);
+//!             // strip the `\n' (and `\r' if present)
+//!             if full_line.ends_with(&[b'\r', b'\n']) {
+//!                 i -= 1;
+//!             }
+//!             let slice = &full_line[..i];
 //!             Ok(Some(parse_u64(slice)?))
 //!         } else {
 //!             Ok(None)
@@ -121,13 +126,18 @@
 //!
 //!     // Attempt to decode a message assuming that the given buffer contains
 //!     // *all* remaining input data.
-//!     fn decode_eof(&mut self, buf: &mut EasyBuf) -> io::Result<u64> {
+//!     fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<u64>, io::Error> {
 //!         let amt = buf.len();
-//!         Ok(parse_u64(buf.drain_to(amt).as_slice())?)
+//!         Ok(Some(parse_u64(&buf.split_to(amt)[..])?))
 //!     }
+//! }
 //!
-//!     fn encode(&mut self, item: u64, into: &mut Vec<u8>) -> io::Result<()> {
-//!         writeln!(into, "{}", item);
+//! impl Encoder for IntCodec {
+//!     type Item = u64;
+//!     type Error = io::Error;
+//!
+//!     fn encode(&mut self, item: u64, into: &mut BytesMut) -> io::Result<()> {
+//!         writeln!(into.writer(), "{}", item)?;
 //!         Ok(())
 //!     }
 //! }
@@ -136,7 +146,7 @@
 //!
 //! pub struct IntProto;
 //!
-//! impl<T: Io + 'static> ServerProto<T> for IntProto {
+//! impl<T: AsyncRead + AsyncWrite + 'static> ServerProto<T> for IntProto {
 //!     type Request = u64;
 //!     type Response = u64;
 //!     type Transport = Framed<T, IntCodec>;
