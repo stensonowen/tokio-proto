@@ -137,6 +137,7 @@
 //!     type Error = io::Error;
 //!
 //!     fn encode(&mut self, item: u64, into: &mut BytesMut) -> io::Result<()> {
+//!         into.reserve(8);
 //!         writeln!(into.writer(), "{}", item)?;
 //!         Ok(())
 //!     }
